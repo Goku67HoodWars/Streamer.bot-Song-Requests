@@ -1,0 +1,12 @@
+# build output
+bin/
+obj/
+dist/
+*.user
+
+# local user data — NEVER commit (lives in %AppData% normally, but just in case)
+config.txt
+token.txt
+log.txt
+requests.json
+data/

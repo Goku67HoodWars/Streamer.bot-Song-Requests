@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  YouTube request player - add this in OBS as a Browser Source (URL http://127.0.0.1:8090/youtube).
+
+  This source is DELIBERATELY, COMPLETELY INVISIBLE. It draws nothing - no card, no art, no text, no
+  video - ever. All it does is play the AUDIO of the requested YouTube video (the app fetches the audio
+  file for you; it does NOT embed YouTube, so there's no "error 153"). Leave it in your scene; it stays blank.
+
+  The on-stream "now playing" visuals come from the separate nowplaying.html overlay (and the dock) - NOT here.
+
+  * Tick "Control audio via OBS" so it gets its own fader in the Audio Mixer.
+  * For sound, click "Fix YouTube sound in OBS" in the app once (OBS blocks autoplay-with-sound otherwise).
+-->
+<style>
+  /* Nothing is ever shown. Transparent source, no layout, no paint. */
+  html, body { margin:0; padding:0; width:100%; height:100%; background:transparent; overflow:hidden; }
+  #a { position:absolute; left:-9999px; top:-9999px; width:1px; height:1px; opacity:0; pointer-events:none; }
+</style>
+</head>
+<body>
+<!-- audio-only element: renders nothing on screen, just decodes + plays the app's local audio file -->
+<audio id="a"></audio>
+<script>
+  const BASE = "http://127.0.0.1:8090";
+  let TOK = "__SQTOKEN__";                       // replaced by the app when served from /youtube
+  const a = document.getElementById("a");
+  let cur = null, ep = -1, vol = 70, fails = 0, capMs = 0, lastSeekId = -1;
+
+  // If loaded via "Local file", the token wasn't injected - fetch it from the app (localhost only).
+  async function ensureTok(force){
+    if (force || TOK === "__" + "SQTOKEN__"){ try { const r = await fetch(BASE + "/token"); if (r.ok) TOK = (await r.json()).tok; } catch(_){} }
+  }
+
+  a.addEventListener("ended", () => { if (cur) report("ended"); });
+  a.addEventListener("error", () => { if (cur) report("error", "&code=" + (a.error ? a.error.code : "?")); });
+  a.addEventListener("timeupdate", () => { if (cur && capMs > 0 && a.currentTime * 1000 > capMs) report("ended"); });
+
+  function report(ev, extra){
+    const id = cur, epoch = ep;
+    stopLocal();
+    fetch(BASE + "/player?tok=" + TOK + "&ev=" + ev + "&id=" + id + "&epoch=" + epoch + (extra || "")).catch(()=>{});
+  }
+  function stopLocal(){
+    cur = null; capMs = 0;
+    try { a.pause(); a.removeAttribute("src"); a.load(); } catch(_){}
+  }
+
+  async function poll(){
+    try{
+      let q = "tok=" + TOK + "&ev=poll&ready=1&id=" + (cur || "") + "&epoch=" + ep;
+      if (cur && !isNaN(a.currentTime)){
+        q += "&pos=" + Math.round((a.currentTime || 0) * 1000)
+           + "&dur=" + Math.round((isNaN(a.duration) ? 0 : a.duration) * 1000)
+           + "&playing=" + (!a.paused && !a.ended ? 1 : 0);
+      }
+      const r = await fetch(BASE + "/player?" + q);
+      if (r.status === 403){ await ensureTok(true); setTimeout(poll, 800); return; }   // token rotated (app restarted) -> re-bootstrap
+      const d = await r.json();
+      fails = 0;
+      if (typeof d.vol === "number" && d.vol !== vol){ vol = d.vol; a.volume = Math.max(0, Math.min(1, vol / 100)); }
+      if (d.action === "play" && (d.videoId !== cur || d.epoch !== ep)){
+        cur = d.videoId; ep = d.epoch; lastSeekId = d.seekId;   // adopt current seek id so a stale seek isn't applied to a new song
+        a.muted = false;
+        a.volume = Math.max(0, Math.min(1, vol / 100));
+        a.src = BASE + "/ytaudio?id=" + cur + "&tok=" + TOK;   // local audio file served by the app - never a YouTube embed
+        capMs = d.capMs || 600000;   // hard length cap, enforced off actual played time (a.currentTime) so pausing doesn't count
+        try {
+          await a.play();                       // with the OBS sound flag set: plays with sound
+        } catch(err){
+          if (a.error){ /* real load/decode failure - the 'error' listener reports the true code */ }
+          else {
+            // autostart-WITH-SOUND was blocked (OBS launched without the sound flag). Play it muted so the
+            // song still plays through and the queue keeps moving; sound returns once the flag is added.
+            try { a.muted = true; await a.play(); }
+            catch(e2){ if (!a.error) report("error", "&code=autoplay"); }
+          }
+        }
+      } else if (d.action === "play" && cur){
+        // same song still playing - apply the dock's pause / seek
+        if (d.paused && !a.paused) a.pause();
+        else if (!d.paused && a.paused && !a.ended) a.play().catch(()=>{});
+        if (typeof d.seekId === "number" && d.seekId !== lastSeekId){ lastSeekId = d.seekId; try { a.currentTime = Math.max(0, (d.seekMs || 0) / 1000); } catch(_){} }
+      } else if (d.action !== "play" && cur){
+        stopLocal();   // skipped / removed from the app or dock
+      }
+    } catch(_){
+      // app not running / unreachable - stop after a few misses so it doesn't keep playing, then retry.
+      if (cur && ++fails >= 6) stopLocal();
+    }
+    setTimeout(poll, 800);
+  }
+
+  (async () => { await ensureTok(); a.volume = vol / 100; poll(); })();
+</script>
+</body>
+</html>

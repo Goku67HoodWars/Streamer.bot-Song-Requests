@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html,body{margin:0;padding:0;background:transparent;overflow:hidden;
+    font-family:"Segoe UI",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+
+  /* The card hugs the text: it shrinks to fit the song name, but never gets
+     narrower than 210px or wider than 600px (long names then get an ellipsis).
+     Size the OBS source to 640 x 150 (the max) - short names just fill less of it. */
+  #wrap{position:absolute;left:10px;top:10px;width:fit-content;
+    opacity:0;transform:translateY(10px);
+    transition:opacity .45s ease, transform .45s ease}
+  #wrap.show{opacity:1;transform:translateY(0)}
+
+  #card{
+    display:flex;align-items:center;gap:14px;
+    width:fit-content;min-width:210px;max-width:600px;
+    padding:12px 16px 12px 12px;position:relative;overflow:hidden;
+    background:linear-gradient(135deg, rgba(30,30,40,.95), rgba(16,16,22,.95));
+    border:1px solid rgba(255,255,255,.07);
+    border-radius:16px;
+    box-shadow:0 8px 24px rgba(0,0,0,.55);
+  }
+  /* soft green glow in the corner */
+  #card::before{content:"";position:absolute;inset:0;border-radius:16px;pointer-events:none;
+    background:radial-gradient(140px 70px at 14% 0%, rgba(29,185,84,.20), transparent 70%)}
+
+  #art{width:64px;height:64px;border-radius:11px;object-fit:cover;background:#2a2a34;flex:none;
+    box-shadow:0 3px 10px rgba(0,0,0,.55);position:relative;z-index:1}
+  #info{min-width:0;flex:1;position:relative;z-index:1}
+  #titleRow{display:flex;align-items:center;gap:9px}
+  #title{color:#fff;font-weight:700;font-size:17px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #artist{color:#b3b3b3;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  #barbg{height:5px;background:rgba(255,255,255,.16);border-radius:99px;margin-top:9px;overflow:hidden}
+  #bar{height:100%;width:0;background:linear-gradient(90deg,#1db954,#1ed760);border-radius:99px}
+
+  /* animated equalizer */
+  #eq{display:flex;align-items:flex-end;gap:2px;height:15px;flex:none}
+  #eq i{width:3px;height:4px;background:#1ed760;border-radius:2px;animation:eq .9s infinite ease-in-out}
+  #eq i:nth-child(2){animation-delay:.18s}
+  #eq i:nth-child(3){animation-delay:.36s}
+  #eq i:nth-child(4){animation-delay:.12s}
+  @keyframes eq{0%,100%{height:4px}50%{height:15px}}
+
+  /* "up next" tab under the card */
+  #next{display:none;align-items:center;gap:9px;
+    width:fit-content;max-width:600px;
+    margin:6px 0 0 0;padding:6px 12px;
+    background:rgba(10,10,14,.92);
+    border:1px solid rgba(255,255,255,.06);
+    border-radius:11px}
+  #next.show{display:flex}
+  #nextArt{width:22px;height:22px;border-radius:5px;object-fit:cover;background:#2a2a34;flex:none}
+  #nextLabel{color:#1ed760;font-weight:800;font-size:9.5px;letter-spacing:1px;flex:none}
+  #nextText{color:#cccdd6;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="card">
+    <img id="art" alt="">
+    <div id="info">
+      <div id="titleRow">
+        <div id="title"></div>
+        <div id="eq"><i></i><i></i><i></i><i></i></div>
+      </div>
+      <div id="artist"></div>
+      <div id="barbg"><div id="bar"></div></div>
+    </div>
+  </div>
+  <div id="next">
+    <img id="nextArt" alt="">
+    <span id="nextLabel">UP NEXT</span>
+    <span id="nextText"></span>
+  </div>
+</div>
+
+<script>
+  // Live feed served by the engine (SongRequests.exe --engine).
+  const FEED = "http://127.0.0.1:8090/nowplaying";
+
+  const wrap = document.getElementById("wrap"),
+        art = document.getElementById("art"),
+        title = document.getElementById("title"),
+        artist = document.getElementById("artist"),
+        bar = document.getElementById("bar"),
+        nextBox = document.getElementById("next"),
+        nextArt = document.getElementById("nextArt"),
+        nextText = document.getElementById("nextText");
+  let prog = 0, dur = 1, playing = false, stamp = 0, curArt = "", curNextArt = "";
+
+  async function poll(){
+    try{
+      const r = await fetch(FEED + "?t=" + Date.now());
+      const d = await r.json();
+      playing = !!d.playing;
+      if (playing){
+        title.textContent  = d.title  || "";
+        artist.textContent = d.artist || "";
+        if (d.art && d.art !== curArt){ art.src = d.art; curArt = d.art; }
+        prog = d.progress || 0; dur = d.duration || 1; stamp = performance.now();
+        wrap.classList.add("show");
+
+        if (d.next && d.nextTitle){
+          nextText.textContent = d.nextTitle + (d.nextArtist ? "  -  " + d.nextArtist : "");
+          if (d.nextArt){ if (d.nextArt !== curNextArt){ nextArt.src = d.nextArt; curNextArt = d.nextArt; } nextArt.style.display = "block"; }
+          else nextArt.style.display = "none";
+          nextBox.classList.add("show");
+        } else {
+          nextBox.classList.remove("show");
+        }
+      } else {
+        wrap.classList.remove("show");
+        nextBox.classList.remove("show");
+      }
+    } catch(e){
+      wrap.classList.remove("show");
+      nextBox.classList.remove("show");   // engine not running / nothing playing
+    }
+  }
+
+  function tick(){
+    if (playing){
+      let p = prog + (performance.now() - stamp);
+      if (p > dur) p = dur;
+      bar.style.width = (p / dur * 100) + "%";
+    }
+    requestAnimationFrame(tick);
+  }
+
+  poll(); setInterval(poll, 1500); tick();
+</script>
+</body>
+</html>
