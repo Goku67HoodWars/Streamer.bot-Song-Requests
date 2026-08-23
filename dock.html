@@ -109,6 +109,38 @@
   #offline{display:none;text-align:center;padding:26px 10px;color:var(--dim)}
   #offline b{color:var(--txt)}
   #warn{display:none;font-size:11px;color:#e8b34c;margin-top:6px}
+
+  /* rules + blocklists */
+  .numRow{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+  .numRow label{color:var(--dim);font-size:11px;flex:1}
+  .numRow input{width:56px;background:#26262e;border:1px solid #3a3a44;color:#fff;border-radius:6px;padding:3px 6px;font-size:12px;text-align:right}
+  .numRow .unit{color:var(--dim);font-size:11px;flex:none;width:46px}
+  .blGroup{margin-bottom:11px}
+  .blGroup>.blh{color:var(--dim);font-size:11px;margin:2px 2px 5px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .blList{display:flex;flex-direction:column;gap:3px;margin-bottom:5px}
+  .blItem{display:flex;align-items:center;gap:8px;background:var(--card2);border-radius:7px;padding:5px 8px}
+  .blItem span{flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .blItem button{flex:none;width:20px;height:20px;border:none;border-radius:5px;cursor:pointer;background:rgba(240,90,90,.14);color:var(--red);font-weight:700;line-height:1}
+  .blItem button:hover{background:rgba(240,90,90,.28)}
+  .blAdd{display:flex;gap:6px}
+  .blAdd input{flex:1;background:var(--card2);border:1px solid rgba(255,255,255,.09);color:var(--txt);border-radius:7px;padding:6px 9px;font-size:12px;outline:none}
+  .blAdd input::placeholder{color:#5a5a68}
+  .blAdd button{background:var(--card2);border:1px solid rgba(255,255,255,.12);color:var(--txt);border-radius:7px;padding:6px 10px;font-size:12px;cursor:pointer}
+  .blAdd button:hover{background:#33333f}
+  .blEmpty{color:#5a5a68;font-size:11px;padding:2px 2px 4px}
+  .miniBtn{background:var(--card2);border:1px solid rgba(255,255,255,.12);color:var(--dim);border-radius:6px;padding:3px 8px;font-size:10.5px;cursor:pointer}
+  .miniBtn:hover{background:#33333f;color:var(--txt)}
+  .txtWide{flex:1;min-width:0;background:var(--card2);border:1px solid rgba(255,255,255,.09);color:var(--txt);border-radius:7px;padding:6px 9px;font-size:12px;outline:none}
+  .txtWide::placeholder{color:#5a5a68}
+  .selBox{flex:none;background:#26262e;border:1px solid #3a3a44;color:#fff;border-radius:6px;padding:4px 6px;font-size:12px}
+  .cmdItem{background:var(--card2);border-radius:8px;padding:8px;margin-bottom:7px}
+  .cmdItem .top{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .cmdItem .nm{font-weight:700;font-size:12px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cmdItem .grid{display:flex;gap:6px;margin-bottom:5px;align-items:center;flex-wrap:wrap}
+  .cmdItem .grid label{color:var(--dim);font-size:10.5px}
+  .cmdItem input.mini{width:42px;background:#26262e;border:1px solid #3a3a44;color:#fff;border-radius:5px;padding:3px 5px;font-size:11.5px;text-align:right}
+  .cmdItem select.mini{background:#26262e;border:1px solid #3a3a44;color:#fff;border-radius:5px;padding:2px 4px;font-size:11.5px}
+  .cmdItem input.full{width:100%;box-sizing:border-box;background:#26262e;border:1px solid #3a3a44;color:#e8e8f0;border-radius:6px;padding:5px 7px;font-size:11.5px;margin-bottom:5px}
 </style>
 </head>
 <body>
@@ -167,6 +199,11 @@
         <button id="chatToggle" class="toggle" role="switch" aria-checked="false" title="Post each request's result to Twitch chat (needs the Streamer.bot announce action set up)"><span class="knob"></span></button>
         <span id="chatState" class="st">Off</span>
       </div>
+      <div class="setRow">
+        <label>OBS now-playing files</label>
+        <button id="outToggle" class="toggle" role="switch" aria-checked="true" title="Write the current song to text files + cover.png (in %AppData%\SongRequests\obs) for OBS Text/Image sources"><span class="knob"></span></button>
+        <span id="outState" class="st">On</span>
+      </div>
       <div id="volRow">
         <label>YouTube volume</label>
         <input id="vol" type="range" min="0" max="100" value="70">
@@ -182,6 +219,82 @@
         <button id="addBtn">Add</button>
       </div>
       <div id="addMsg"></div>
+      </div>
+    </div>
+
+    <div class="card" data-sec="rules">
+      <div class="sh"><span class="htitle">Rules</span><span class="chev">▾</span></div>
+      <div class="body">
+        <div class="numRow"><label>Max queue length</label><input id="maxQueue" type="text" inputmode="numeric" maxlength="4" value="0"><span class="unit">0 = ∞</span></div>
+        <div class="numRow"><label>Max per user</label><input id="maxPerUser" type="text" inputmode="numeric" maxlength="3" value="0"><span class="unit">0 = ∞</span></div>
+        <div class="numRow"><label>Cooldown</label><input id="cooldown" type="text" inputmode="numeric" maxlength="4" value="0"><span class="unit">sec</span></div>
+        <div class="numRow"><label>Per-user cooldown</label><input id="userCooldown" type="text" inputmode="numeric" maxlength="4" value="0"><span class="unit">sec</span></div>
+        <div class="setRow"><label>Block explicit tracks</label><button id="expToggle" class="toggle" role="switch" aria-checked="false" title="Refund Spotify tracks flagged explicit"><span class="knob"></span></button><span id="expState" class="st">Off</span></div>
+      </div>
+    </div>
+
+    <div class="card" data-sec="blocklist">
+      <div class="sh"><span class="htitle">Blocklists</span><span class="chev">▾</span></div>
+      <div class="body">
+        <div class="blGroup">
+          <div class="blh"><span>Blocked users</span></div>
+          <div id="blUsers" class="blList"></div>
+          <div class="blAdd"><input id="blUsersInput" placeholder="username"><button data-bl="user">Add</button></div>
+        </div>
+        <div class="blGroup">
+          <div class="blh"><span>Blocked songs</span><button class="miniBtn" id="blockCurSong" title="Block the song playing now">Block current</button></div>
+          <div id="blSongs" class="blList"></div>
+          <div class="blAdd"><input id="blSongsInput" placeholder="title, link, or term"><button data-bl="song">Add</button></div>
+        </div>
+        <div class="blGroup">
+          <div class="blh"><span>Blocked artists</span><button class="miniBtn" id="blockCurArtist" title="Block the artist playing now">Block current</button></div>
+          <div id="blArtists" class="blList"></div>
+          <div class="blAdd"><input id="blArtistsInput" placeholder="artist name"><button data-bl="artist">Add</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" data-sec="output">
+      <div class="sh"><span class="htitle">OBS output</span><span class="chev">▾</span></div>
+      <div class="body">
+        <div class="blh" style="color:var(--dim);font-size:11px;margin:2px 2px 5px">Now-playing text/cover files (apply instantly)</div>
+        <div class="blAdd"><input id="outFormat" class="txtWide" type="text" placeholder="{artist} - {title}"><button id="outFormatSave">Save</button></div>
+        <div class="blEmpty">tokens: {artist} {title} {req} {url} · {{ shown only when requested }}</div>
+        <div class="setRow"><label>Split artist/title/requester files</label><button id="splitToggle" class="toggle" role="switch" aria-checked="false"><span class="knob"></span></button><span id="splitState" class="st">Off</span></div>
+        <div class="setRow"><label>Download cover art</label><button id="coverToggle" class="toggle" role="switch" aria-checked="true"><span class="knob"></span></button><span id="coverState" class="st">On</span></div>
+        <div class="setRow"><label>When paused / idle</label><select id="pauseSel" class="selBox"><option value="nothing">keep last</option><option value="clear">clear</option><option value="text">custom text</option></select></div>
+        <div id="pauseTextRow" class="blAdd" style="display:none"><input id="pauseText" class="txtWide" type="text" placeholder="— paused —"><button id="pauseTextSave">Save</button></div>
+      </div>
+    </div>
+
+    <div class="card collapsed" data-sec="commands">
+      <div class="sh"><span class="htitle">Commands</span><span class="chev">▾</span></div>
+      <div class="body">
+        <div class="blAdd" style="margin-bottom:8px"><button id="cmdsReload">Reload</button><span id="cmdsMsg" class="blEmpty" style="align-self:center"></span></div>
+        <div id="cmdsList"></div>
+      </div>
+    </div>
+
+    <div class="card" data-sec="bot">
+      <div class="sh"><span class="htitle">Twitch bot</span><span class="chev">▾</span></div>
+      <div class="body">
+        <div class="setRow"><label>Enable bot</label><button id="botToggle" class="toggle" role="switch" aria-checked="false"><span class="knob"></span></button><span id="botState" class="st">Off</span></div>
+        <div id="botStatus" class="blEmpty">off</div>
+        <div class="setRow"><label>Mode</label><select id="botMode" class="selBox"><option value="irc">Chat token (IRC)</option><option value="app">Twitch app (OAuth)</option></select></div>
+        <div id="botIrc">
+          <div class="blAdd"><input id="botUser" class="txtWide" type="text" placeholder="bot username"><button data-botsave="botuser">Save</button></div>
+          <div class="blAdd"><input id="botChannel" class="txtWide" type="text" placeholder="channel"><button data-botsave="channel">Save</button></div>
+          <div id="botTokenState" class="blEmpty"></div>
+        </div>
+        <div id="botApp" style="display:none">
+          <div class="blAdd"><input id="botClientId" class="txtWide" type="text" placeholder="client ID"><button data-botsave="clientid">Save</button></div>
+          <div id="botSecretState" class="blEmpty"></div>
+          <div class="blAdd"><button id="botConnect">Connect Twitch</button><span id="botConnectMsg" class="blEmpty" style="align-self:center"></span></div>
+          <div class="setRow"><label>Native redemptions</label><button id="redToggle" class="toggle" role="switch" aria-checked="false"><span class="knob"></span></button><span id="redState" class="st">SB</span></div>
+          <div class="setRow"><label>Create/manage reward</label><button id="rewToggle" class="toggle" role="switch" aria-checked="false"><span class="knob"></span></button><span id="rewState" class="st">Off</span></div>
+          <div class="setRow"><label>Bits requests</label><button id="bitsToggle" class="toggle" role="switch" aria-checked="false"><span class="knob"></span></button><span id="bitsState" class="st">Off</span></div>
+        </div>
+        <div class="blEmpty">Tokens/secret go in config.txt. Click Restart (Engine) after changes.</div>
       </div>
     </div>
 
@@ -203,6 +316,11 @@
   let ppBusy = false, seekDrag = false;
   let spEnabled = true, spConnected = true, ytEnabled = false, spBusy = false, ytBusy = false, stopArm = false, stopT = 0;
   let chatOn = false, chatBusy = false, allOn = true, allBusy = false;
+  let outOn = true, outBusy = false;
+  let ruleBusy = {}, ruleT = {}, expOn = false, expBusy = false;
+  let lastBl = { user: "~", song: "~", artist: "~" }, curTitle = "", curArtist = "";
+  let outCfgLoaded = false, splitOn = false, splitBusy = false, coverOn = true, coverBusy = false;
+  let botLoaded = false, botEnOn = false, botEnBusy = false, redOn = false, redBusy = false, rewOn = false, rewBusy = false, bitsOn = false, bitsBusy = false;
 
   async function ensureTok(force){
     if (force || TOK === "__" + "SQTOKEN__"){ try { const r = await fetch(API + "/token"); if (r.ok) TOK = (await r.json()).tok; } catch(_){} }
@@ -244,6 +362,33 @@
   function applyYt(){ $("ytToggle").setAttribute("aria-checked", ytEnabled ? "true" : "false"); $("ytState").textContent = ytEnabled ? "On" : "Off"; }
   $("chatToggle").onclick = async () => { if (chatBusy) return; chatBusy = true; chatOn = !chatOn; applyChat(); await cmd("cmd=enable&src=chat&on=" + (chatOn ? 1 : 0)); setTimeout(() => chatBusy = false, 600); };
   function applyChat(){ $("chatToggle").setAttribute("aria-checked", chatOn ? "true" : "false"); $("chatState").textContent = chatOn ? "On" : "Off"; }
+  $("outToggle").onclick = async () => { if (outBusy) return; outBusy = true; outOn = !outOn; applyOut(); await cmd("cmd=output&on=" + (outOn ? 1 : 0)); setTimeout(() => outBusy = false, 600); };
+  function applyOut(){ $("outToggle").setAttribute("aria-checked", outOn ? "true" : "false"); $("outState").textContent = outOn ? "On" : "Off"; }
+
+  // --- Rules (numeric limits + explicit toggle) ---
+  function wireNum(id, key){
+    $(id).oninput = e => { e.target.value = e.target.value.replace(/[^0-9]/g, ""); ruleBusy[id] = true; };
+    $(id).onchange = e => { let v = parseInt(e.target.value, 10); if (isNaN(v) || v < 0) v = 0; e.target.value = v; cmd("cmd=rule&k=" + key + "&v=" + v); clearTimeout(ruleT[id]); ruleT[id] = setTimeout(() => ruleBusy[id] = false, 2500); };
+  }
+  wireNum("maxQueue", "maxqueue"); wireNum("maxPerUser", "maxperuser"); wireNum("cooldown", "cooldown"); wireNum("userCooldown", "usercooldown");
+  $("expToggle").onclick = async () => { if (expBusy) return; expBusy = true; expOn = !expOn; applyExp(); await cmd("cmd=rule&k=explicit&v=" + (expOn ? 1 : 0)); setTimeout(() => expBusy = false, 600); };
+  function applyExp(){ $("expToggle").setAttribute("aria-checked", expOn ? "true" : "false"); $("expState").textContent = expOn ? "On" : "Off"; }
+
+  // --- Blocklists (users / songs / artists) ---
+  function blAdd(kind){ const inp = $(kind === "user" ? "blUsersInput" : kind === "song" ? "blSongsInput" : "blArtistsInput"); const v = inp.value.trim(); if (!v) return; cmd("cmd=blacklist&kind=" + kind + "&op=add&val=" + encodeURIComponent(v)); inp.value = ""; lastBl[kind] = "~"; }
+  function blRemove(kind, val){ cmd("cmd=blacklist&kind=" + kind + "&op=remove&val=" + encodeURIComponent(val)); lastBl[kind] = "~"; }
+  document.querySelectorAll(".blAdd button[data-bl]").forEach(b => b.onclick = () => blAdd(b.getAttribute("data-bl")));
+  ["blUsersInput", "blSongsInput", "blArtistsInput"].forEach((id, i) => { const kind = ["user", "song", "artist"][i]; $(id).addEventListener("keydown", e => { if (e.key === "Enter" && !e.repeat) blAdd(kind); }); });
+  $("blockCurSong").onclick = () => { if (curTitle){ cmd("cmd=blacklist&kind=song&op=add&val=" + encodeURIComponent(curTitle)); lastBl.song = "~"; } };
+  $("blockCurArtist").onclick = () => { if (curArtist){ cmd("cmd=blacklist&kind=artist&op=add&val=" + encodeURIComponent(curArtist)); lastBl.artist = "~"; } };
+  function renderBl(kind, listId, arr){
+    const key = JSON.stringify(arr || []);
+    if (lastBl[kind] === key) return;                 // unchanged -> don't disrupt the list / rebuild DOM
+    lastBl[kind] = key;
+    const el = $(listId); el.innerHTML = "";
+    if (!arr || !arr.length){ const e = document.createElement("div"); e.className = "blEmpty"; e.textContent = "none"; el.appendChild(e); return; }
+    arr.forEach(v => { const d = document.createElement("div"); d.className = "blItem"; const s = document.createElement("span"); s.textContent = v; s.title = v; const x = document.createElement("button"); x.textContent = "✕"; x.title = "Remove"; x.onclick = () => blRemove(kind, v); d.appendChild(s); d.appendChild(x); el.appendChild(d); });
+  }
   $("allToggle").onclick = async () => { if (allBusy) return; allBusy = true; allOn = !allOn; applyAll(); await cmd("cmd=enable&src=all&on=" + (allOn ? 1 : 0)); setTimeout(() => allBusy = false, 600); };
   function applyAll(){ $("allToggle").setAttribute("aria-checked", allOn ? "true" : "false"); $("allState").textContent = allOn ? "On" : "Off"; }
   $("restartBtn").onclick = async () => {
@@ -299,6 +444,66 @@
     return d;
   }
 
+  // --- OBS output settings (apply live on the engine's next now-playing tick) ---
+  function flashSaved(btn){ const o = btn.textContent; btn.textContent = "Saved ✓"; setTimeout(() => btn.textContent = o, 1200); }
+  $("outFormatSave").onclick = () => { cmd("cmd=outcfg&k=format&v=" + encodeURIComponent($("outFormat").value)); flashSaved($("outFormatSave")); };
+  $("outFormat").addEventListener("keydown", e => { if (e.key === "Enter") $("outFormatSave").click(); });
+  $("splitToggle").onclick = async () => { if (splitBusy) return; splitBusy = true; splitOn = !splitOn; applySplit(); await cmd("cmd=outcfg&k=split&v=" + (splitOn ? 1 : 0)); setTimeout(() => splitBusy = false, 600); };
+  function applySplit(){ $("splitToggle").setAttribute("aria-checked", splitOn ? "true" : "false"); $("splitState").textContent = splitOn ? "On" : "Off"; }
+  $("coverToggle").onclick = async () => { if (coverBusy) return; coverBusy = true; coverOn = !coverOn; applyCover(); await cmd("cmd=outcfg&k=cover&v=" + (coverOn ? 1 : 0)); setTimeout(() => coverBusy = false, 600); };
+  function applyCover(){ $("coverToggle").setAttribute("aria-checked", coverOn ? "true" : "false"); $("coverState").textContent = coverOn ? "On" : "Off"; }
+  $("pauseSel").onchange = e => { const v = e.target.value; cmd("cmd=outcfg&k=pause&v=" + v); $("pauseTextRow").style.display = v === "text" ? "flex" : "none"; };
+  $("pauseTextSave").onclick = () => { cmd("cmd=outcfg&k=pausetext&v=" + encodeURIComponent($("pauseText").value)); flashSaved($("pauseTextSave")); };
+
+  // --- Twitch bot settings (non-secret; Restart to apply) ---
+  $("botToggle").onclick = async () => { if (botEnBusy) return; botEnBusy = true; botEnOn = !botEnOn; applyBotEn(); await cmd("cmd=botcfg&k=enabled&v=" + (botEnOn ? 1 : 0)); setTimeout(() => botEnBusy = false, 600); };
+  function applyBotEn(){ $("botToggle").setAttribute("aria-checked", botEnOn ? "true" : "false"); $("botState").textContent = botEnOn ? "On" : "Off"; }
+  $("botMode").onchange = e => { const v = e.target.value; cmd("cmd=botcfg&k=mode&v=" + v); showBotMode(v); };
+  function showBotMode(v){ $("botIrc").style.display = v === "app" ? "none" : "block"; $("botApp").style.display = v === "app" ? "block" : "none"; }
+  document.querySelectorAll("[data-botsave]").forEach(b => b.onclick = () => {
+    const key = b.getAttribute("data-botsave");
+    const id = key === "botuser" ? "botUser" : key === "channel" ? "botChannel" : "botClientId";
+    cmd("cmd=botcfg&k=" + key + "&v=" + encodeURIComponent($(id).value.trim())); flashSaved(b);
+  });
+  $("botConnect").onclick = async () => { $("botConnectMsg").textContent = "opening browser…"; const r = await cmd("cmd=twitchauth"); $("botConnectMsg").textContent = r && r.status ? r.status : "check the app"; setTimeout(() => $("botConnectMsg").textContent = "", 6000); };
+  $("redToggle").onclick = async () => { if (redBusy) return; redBusy = true; redOn = !redOn; applyRed(); await cmd("cmd=botcfg&k=redemptionsource&v=" + (redOn ? "twitch" : "sb")); setTimeout(() => redBusy = false, 600); };
+  function applyRed(){ $("redToggle").setAttribute("aria-checked", redOn ? "true" : "false"); $("redState").textContent = redOn ? "Twitch" : "SB"; }
+  $("rewToggle").onclick = async () => { if (rewBusy) return; rewBusy = true; rewOn = !rewOn; applyRew(); await cmd("cmd=botcfg&k=managereward&v=" + (rewOn ? 1 : 0)); setTimeout(() => rewBusy = false, 600); };
+  function applyRew(){ $("rewToggle").setAttribute("aria-checked", rewOn ? "true" : "false"); $("rewState").textContent = rewOn ? "On" : "Off"; }
+  $("bitsToggle").onclick = async () => { if (bitsBusy) return; bitsBusy = true; bitsOn = !bitsOn; applyBits(); await cmd("cmd=botcfg&k=srforbits&v=" + (bitsOn ? 1 : 0)); setTimeout(() => bitsBusy = false, 600); };
+  function applyBits(){ $("bitsToggle").setAttribute("aria-checked", bitsOn ? "true" : "false"); $("bitsState").textContent = bitsOn ? "On" : "Off"; }
+
+  // --- Commands editor (fetched on load + Reload; edits apply live, no restart) ---
+  function mkLabel(t){ const l = document.createElement("label"); l.textContent = t; return l; }
+  function mkNum(v){ const i = document.createElement("input"); i.className = "mini"; i.type = "text"; i.inputMode = "numeric"; i.value = (v != null ? v : 0); i.oninput = () => { i.value = i.value.replace(/[^0-9]/g, ""); }; return i; }
+  function cmdEdit(name, field, val){ cmd("cmd=cmdedit&name=" + encodeURIComponent(name) + "&field=" + field + "&value=" + encodeURIComponent(val)); }
+  function renderCommands(list){
+    const el = $("cmdsList"); el.innerHTML = "";
+    (list || []).forEach(c => {
+      const d = document.createElement("div"); d.className = "cmdItem";
+      const top = document.createElement("div"); top.className = "top";
+      const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = "!" + ((c.triggers && c.triggers[0]) || c.name) + "  (" + c.name + ")";
+      const tog = document.createElement("button"); tog.className = "toggle"; tog.setAttribute("role", "switch"); tog.setAttribute("aria-checked", c.enabled ? "true" : "false");
+      const knob = document.createElement("span"); knob.className = "knob"; tog.appendChild(knob);
+      tog.onclick = () => { const on = tog.getAttribute("aria-checked") !== "true"; tog.setAttribute("aria-checked", on ? "true" : "false"); cmdEdit(c.name, "enabled", on ? 1 : 0); };
+      top.appendChild(nm); top.appendChild(tog); d.appendChild(top);
+      const ti = document.createElement("input"); ti.className = "full"; ti.value = (c.triggers || []).join(" "); ti.title = "triggers (space-separated, no prefix)"; ti.placeholder = "triggers";
+      ti.onchange = () => cmdEdit(c.name, "triggers", ti.value); d.appendChild(ti);
+      const g = document.createElement("div"); g.className = "grid";
+      g.appendChild(mkLabel("level"));
+      const lvl = document.createElement("select"); lvl.className = "mini"; ["0 all", "1 sub", "2 vip", "3 mod", "4 bcast"].forEach((t, i) => { const o = document.createElement("option"); o.value = i; o.textContent = t; lvl.appendChild(o); }); lvl.value = c.level || 0;
+      lvl.onchange = () => cmdEdit(c.name, "level", lvl.value); g.appendChild(lvl);
+      g.appendChild(mkLabel("cd")); const cd = mkNum(c.cd); cd.onchange = () => cmdEdit(c.name, "cd", parseInt(cd.value, 10) || 0); g.appendChild(cd);
+      g.appendChild(mkLabel("per-user")); const ucd = mkNum(c.ucd); ucd.onchange = () => cmdEdit(c.name, "ucd", parseInt(ucd.value, 10) || 0); g.appendChild(ucd);
+      d.appendChild(g);
+      const ri = document.createElement("input"); ri.className = "full"; ri.value = c.resp || ""; ri.placeholder = "response ({user} {song} {queue} …)";
+      ri.onchange = () => cmdEdit(c.name, "resp", ri.value); d.appendChild(ri);
+      el.appendChild(d);
+    });
+  }
+  async function loadCommands(){ const r = await cmd("cmd=commands"); if (!r || !r.commands){ $("cmdsMsg").textContent = "engine not running"; return; } $("cmdsMsg").textContent = r.commands.length + " commands"; renderCommands(r.commands); }
+  $("cmdsReload").onclick = loadCommands;
+
   async function poll(){
     try{
       let r = await fetch(API + "/queue?tok=" + TOK + "&t=" + Date.now());
@@ -334,6 +539,36 @@
       if (typeof d.enabled === "boolean" && !ytBusy){ ytEnabled = d.enabled; applyYt(); }
       if (typeof d.reqEnabled === "boolean" && !allBusy){ allOn = d.reqEnabled; applyAll(); }
       if (typeof d.chatAnnounce === "boolean" && !chatBusy){ chatOn = d.chatAnnounce; applyChat(); }
+      if (typeof d.outputEnabled === "boolean" && !outBusy){ outOn = d.outputEnabled; applyOut(); }
+      curTitle = n.title || ""; curArtist = n.artist || "";
+      if (typeof d.maxQueue === "number" && !ruleBusy.maxQueue) $("maxQueue").value = d.maxQueue;
+      if (typeof d.maxPerUser === "number" && !ruleBusy.maxPerUser) $("maxPerUser").value = d.maxPerUser;
+      if (typeof d.cooldown === "number" && !ruleBusy.cooldown) $("cooldown").value = d.cooldown;
+      if (typeof d.userCooldown === "number" && !ruleBusy.userCooldown) $("userCooldown").value = d.userCooldown;
+      if (typeof d.blockExplicit === "boolean" && !expBusy){ expOn = d.blockExplicit; applyExp(); }
+      renderBl("user", "blUsers", d.blUsers); renderBl("song", "blSongs", d.blSongs); renderBl("artist", "blArtists", d.blArtists);
+      if (!outCfgLoaded && typeof d.outputFormat === "string"){   // populate the text fields once, so live typing isn't clobbered
+        outCfgLoaded = true;
+        $("outFormat").value = d.outputFormat;
+        if (typeof d.pauseBehavior === "string"){ $("pauseSel").value = d.pauseBehavior; $("pauseTextRow").style.display = d.pauseBehavior === "text" ? "flex" : "none"; }
+        if (typeof d.customPauseText === "string") $("pauseText").value = d.customPauseText;
+      }
+      if (typeof d.splitOutput === "boolean" && !splitBusy){ splitOn = d.splitOutput; applySplit(); }
+      if (typeof d.downloadCover === "boolean" && !coverBusy){ coverOn = d.downloadCover; applyCover(); }
+      if (typeof d.botEnabled === "boolean" && !botEnBusy){ botEnOn = d.botEnabled; applyBotEn(); }
+      $("botStatus").textContent = d.botConnected ? "connected ✓" : (d.botEnabled ? "enabled — not connected" : "off");
+      if (!botLoaded && typeof d.botMode === "string"){
+        botLoaded = true;
+        $("botMode").value = d.botMode; showBotMode(d.botMode);
+        if (typeof d.botUser === "string") $("botUser").value = d.botUser;
+        if (typeof d.botChannel === "string") $("botChannel").value = d.botChannel;
+        if (typeof d.botClientId === "string") $("botClientId").value = d.botClientId;
+      }
+      if (typeof d.botHasToken === "boolean") $("botTokenState").textContent = d.botHasToken ? "chat token: set ✓" : "chat token: not set — add TwitchBotToken in config.txt";
+      if (typeof d.botHasSecret === "boolean") $("botSecretState").textContent = d.botHasSecret ? "client secret: set ✓" : "client secret: not set — add TwitchClientSecret in config.txt";
+      if (typeof d.redemptionSource === "string" && !redBusy){ redOn = d.redemptionSource === "twitch"; applyRed(); }
+      if (typeof d.manageReward === "boolean" && !rewBusy){ rewOn = d.manageReward; applyRew(); }
+      if (typeof d.srForBits === "boolean" && !bitsBusy){ bitsOn = d.srForBits; applyBits(); }
       $("warn").style.display = d.enabled && !d.playerAlive && (d.yt || []).length ? "block" : "none";
     } catch(_){
       $("offline").style.display = "block"; $("main").style.display = "none";
@@ -380,7 +615,7 @@
     });
   });
 
-  (async () => { await ensureTok(); poll(); setInterval(poll, 1500); tick(); })();
+  (async () => { await ensureTok(); poll(); loadCommands(); setInterval(poll, 1500); tick(); })();
 </script>
 </body>
 </html>

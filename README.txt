@@ -21,7 +21,9 @@ WHAT'S IN THIS FOLDER
   dock.html           <- the in-OBS control dock (added for you in step 5)
   app\                <- program files + .NET runtime (leave it alone)
 
-YOU NEED:  Streamer.bot (running, linked to your Twitch) + OBS + Windows.
+YOU NEED:  OBS + Windows, and a way to receive requests - either Streamer.bot
+           (the classic channel-point flow) OR the built-in native Twitch bot
+           (chat commands; app mode can run channel points + bits on its own).
            Spotify Premium ONLY if you want the Spotify lane.
 
 Open SongRequests.exe and follow the one page, top to bottom. Each step
@@ -79,6 +81,18 @@ Show the current song on stream (works for Spotify AND YouTube):
    - Point it at  nowplaying.html  (in this folder), size 640 x 150.
 Want a custom look? In the app, "Optional extras" -> "Make your own"
 opens a guide (data fields + a prompt to have an AI build the HTML).
+
+--------------------------------------------------
+MORE FEATURES  (full guides in the docs/ folder)
+--------------------------------------------------
+- OBS now-playing FILES: nowplaying.txt + cover.png for OBS Text/Image
+  sources, no browser needed.             -> docs/obs-text-output.md
+- QUEUE RULES + BLOCKLISTS: block users/songs/artists; set max-queue /
+  per-user limits + cooldowns; filter explicit. All from the dock.
+                                          -> docs/queue-governance.md
+- NATIVE TWITCH BOT: chat commands (!sr, !song, !queue, !skip, !voteskip,
+  ...) with levels + cooldowns; app mode can run channel-point rewards +
+  bits with no Streamer.bot.              -> docs/twitch-bot.md
 
 --------------------------------------------------
 TROUBLESHOOT

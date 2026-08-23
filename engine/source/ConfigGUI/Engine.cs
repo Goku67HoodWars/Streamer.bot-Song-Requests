@@ -15,7 +15,7 @@ using System.Threading.Tasks;
 // ===== Song Request engine =====
 // Runs headless as  SongRequests.exe --engine . Reads the settings saved by the GUI,
 // connects to Streamer.bot, and queues requested songs in Spotify. (Uses the shared Req class.)
-class Engine
+partial class Engine
 {
     const string MutexName = "SongRequestsEngineSingleton_v1";
     const string StopName = "SongRequestsEngineStop_v1";
@@ -51,6 +51,34 @@ class Engine
     static int NpPort = 8090;
     static string NowJson = "{\"playing\":false}";
     static readonly object _np = new object();
+
+    // ---- OBS file outputs (now-playing text + cover art for OBS Text/Image sources; see PublishOutputs) ----
+    static bool OutputEnabled = true;                    // master switch for the file outputs
+    static string OutputDir;                             // where the files are written (resolved in LoadConfig)
+    static string OutputFormat = "{artist} - {title}";  // nowplaying.txt template (tokens + {{requested-by}} block)
+    static bool SplitOutput;                             // also write artist.txt / title.txt / requester.txt
+    static string RequesterPrefix = "Requested by ";    // prepended to the requester name in requester.txt
+    static bool DownloadCover = true;                    // save album/thumbnail art to cover.png
+    static bool AppendSpaces; static int SpaceCount = 10; // trailing-space padding for marquee scrolling in OBS
+    static string PauseBehavior = "nothing";            // nothing | clear | text  (what the files show while paused/idle)
+    static string CustomPauseText = "";
+    static readonly object _outLock = new object();
+    static string _outLastKey, _outLastArtUrl;          // debounce so the disk isn't touched every poll
+    static string OutDirDefault => Path.Combine(DataDir, "obs");
+
+    // ---- queue governance (blocklists, limits, cooldowns, explicit filter) - all viewer-facing gates ----
+    static int MaxQueueLength, MaxRequestsPerUser, SrCooldownSec, SrPerUserCooldownSec;   // 0 = unlimited/off
+    static bool BlockExplicit;
+    static volatile HashSet<string> UserBlacklist = new HashSet<string>(StringComparer.OrdinalIgnoreCase);   // exact username match
+    static volatile List<string> SongBlacklist = new List<string>();     // link/uri/id exact, or case-insensitive substring of "title - artist"
+    static volatile List<string> ArtistBlacklist = new List<string>();   // case-insensitive substring of the artist name
+    static readonly object _blLock = new object();                       // serialize blocklist file writes
+    static DateTime _lastReqUtc = DateTime.MinValue;
+    static readonly Dictionary<string, DateTime> _lastReqByUser = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+    static readonly object _gateLock = new object();
+    static string UserBlFile => Path.Combine(DataDir, "blacklist_users.txt");
+    static string SongBlFile => Path.Combine(DataDir, "blacklist_songs.txt");
+    static string ArtistBlFile => Path.Combine(DataDir, "blacklist_artists.txt");
 
     // ---- YouTube request lane (audio plays in the hidden OBS browser-source player; see youtube.html) ----
     // file = cached local audio path once downloaded; dlStarted/dlFailed track the background fetch so the
@@ -118,6 +146,7 @@ class Engine
 
         if (!LoadConfig())
         { Log("Not set up yet - open Song Requests and set it up. Exiting."); return; }
+        LoadBlacklists();   // user/song/artist blocklists (one entry per line, files in the data dir)
 
         // Spotify is OPTIONAL. Connect it if it's set up; otherwise boot YouTube-only. The router defaults to
         // Spotify only when connected+on (else YouTube), and refunds a Spotify-targeted request with a message.
@@ -134,11 +163,18 @@ class Engine
         // If a previous run was killed/crashed while a YouTube item had Spotify paused, resume it now.
         try { if (SpotifyConnected && File.Exists(ResumeMarker)) { File.Delete(ResumeMarker); await SpotifyPlayback(true); Log("Recovered: resumed Spotify (it was paused for a YouTube item at last shutdown)."); } } catch { }
 
+        if (OutputEnabled)
+        {
+            try { Directory.CreateDirectory(OutputDir); } catch { }
+            try { foreach (var f in new[] { "nowplaying.txt", "artist.txt", "title.txt", "requester.txt" }) { var p = Path.Combine(OutputDir, f); if (!File.Exists(p)) File.WriteAllText(p, ""); } } catch { }
+            Log("OBS text files -> " + OutputDir + "  (point an OBS Text source at nowplaying.txt; an Image source at cover.png)");
+        }
         _ = PlayedWatcher();   // marks when queued songs actually play
         _ = NowPlayingLoop();  // caches current track for the overlay
         _ = YtConductor();     // hands playback between Spotify and the YouTube overlay player
         _ = SkipWatcher();     // skips "skip-when-it-plays" Spotify songs within ~0.4s instead of ~2.5s
         _ = Task.Run(() => NowServer());  // serves the overlay/player/dock endpoints on 127.0.0.1:NpPort
+        _ = TwitchChatLoop();   // native Twitch chat bot for viewer commands (!sr, !song, ...) - independent of Streamer.bot
         await RunLoop();
     }
 
@@ -169,6 +205,23 @@ class Engine
         MaxSongSec = int.TryParse(Cfg(c, "MaxSongSeconds", "360"), out var mx) ? Math.Max(30, mx) : 360;
         MinSongSec = int.TryParse(Cfg(c, "MinSongSeconds", "20"), out var mn) ? mn : 20;
         YtVol = int.TryParse(Cfg(c, "YouTubeVolume", "70"), out var yv) ? Math.Clamp(yv, 0, 100) : 70;
+        OutputEnabled = Cfg(c, "OutputEnabled", "1") == "1";
+        OutputDir = Cfg(c, "OutputDir", "");
+        if (string.IsNullOrWhiteSpace(OutputDir)) OutputDir = OutDirDefault;
+        OutputFormat = Cfg(c, "OutputFormat", "{artist} - {title}");
+        SplitOutput = Cfg(c, "SplitOutput", "0") == "1";
+        RequesterPrefix = Cfg(c, "RequesterPrefix", "Requested by ");
+        DownloadCover = Cfg(c, "DownloadCover", "1") == "1";
+        AppendSpaces = Cfg(c, "AppendSpaces", "0") == "1";
+        SpaceCount = int.TryParse(Cfg(c, "SpaceCount", "10"), out var spc) ? Math.Clamp(spc, 0, 200) : 10;
+        PauseBehavior = Cfg(c, "PauseBehavior", "nothing").ToLowerInvariant();
+        CustomPauseText = Cfg(c, "CustomPauseText", "");
+        MaxQueueLength = int.TryParse(Cfg(c, "MaxQueueLength", "0"), out var mql) ? Math.Max(0, mql) : 0;
+        MaxRequestsPerUser = int.TryParse(Cfg(c, "MaxRequestsPerUser", "0"), out var mru) ? Math.Max(0, mru) : 0;
+        SrCooldownSec = int.TryParse(Cfg(c, "SrCooldownSec", "0"), out var scd) ? Math.Max(0, scd) : 0;
+        SrPerUserCooldownSec = int.TryParse(Cfg(c, "SrPerUserCooldownSec", "0"), out var pcd) ? Math.Max(0, pcd) : 0;
+        BlockExplicit = Cfg(c, "BlockExplicit", "0") == "1";
+        LoadTwitchConfig(c);   // native Twitch chat bot settings + command definitions (see TwitchBot.cs)
         return true;   // Spotify keys are no longer required to boot - a config file is enough (YouTube-only if Spotify isn't set up)
     }
 
@@ -231,19 +284,24 @@ class Engine
     static async Task<(string status, string track, string uri)> QueueSong(string input, string user = "", bool fromStreamer = false)
     {
         if (!RequestsEnabled && !fromStreamer) { Log("  Ignored - song requests are turned off."); return ("requests off", null, null); }
+        // Viewer-facing gates (blocklist / cooldown / queue + per-user limits). The streamer's own dock add skips them.
+        if (!fromStreamer) { var gate = CheckGate(user); if (gate != null) { Log("  Rejected (" + gate + ") for " + user + "."); return (gate, null, null); } }
         string s = (input ?? "").Trim();
         // Explicit target wins: "sp "/"yt " prefix, or a platform link. Each queue fn refunds with a message
         // if that platform isn't available (Spotify not connected/off, or YouTube off).
-        if (s.StartsWith("sp ", StringComparison.OrdinalIgnoreCase)) return await QueueSpotify(s.Substring(3).Trim());
-        if (s.StartsWith("yt ", StringComparison.OrdinalIgnoreCase)) return await QueueYouTube(s.Substring(3).Trim(), user);
-        if (YouTube.IsLink(s)) return await QueueYouTube(s, user);
-        if (ExtractTrackUri(s) != null) return await QueueSpotify(s);   // a Spotify track link/URI -> Spotify
+        (string status, string track, string uri) res;
+        if (s.StartsWith("sp ", StringComparison.OrdinalIgnoreCase)) res = await QueueSpotify(s.Substring(3).Trim());
+        else if (s.StartsWith("yt ", StringComparison.OrdinalIgnoreCase)) res = await QueueYouTube(s.Substring(3).Trim(), user);
+        else if (YouTube.IsLink(s)) res = await QueueYouTube(s, user);
+        else if (ExtractTrackUri(s) != null) res = await QueueSpotify(s);   // a Spotify track link/URI -> Spotify
         // No explicit target -> default to the USABLE lane: Spotify when it's connected AND switched on,
         // else YouTube (which refunds "youtube off" itself if that lane is off too). A bare name must never
         // refund just because the streamer toggled Spotify off while YouTube could have served it.
-        if (SpotifyConnected && SpotifyEnabled) return await QueueSpotify(s);
-        if (SpotifyConnected && !YtEnabled) return await QueueSpotify(s);   // both lanes off / YT off -> keep the clearer "spotify off" message
-        return await QueueYouTube(s, user);
+        else if (SpotifyConnected && SpotifyEnabled) res = await QueueSpotify(s);
+        else if (SpotifyConnected && !YtEnabled) res = await QueueSpotify(s);   // both lanes off / YT off -> keep the clearer "spotify off" message
+        else res = await QueueYouTube(s, user);
+        if (!fromStreamer && res.status == "queued") MarkRequested(user);   // only a successful viewer request starts the cooldown(s)
+        return res;
     }
 
     static async Task<(string status, string track, string uri)> QueueYouTube(string q, string user)
@@ -257,6 +315,8 @@ class Engine
         if (m.AgeLimit > 0) { Log("  Rejected (age-restricted): " + label); return ("age blocked", label, uri); }
         if (m.DurationSec > MaxSongSec) { Log($"  Rejected (too long, {m.DurationSec}s > {MaxSongSec}s): " + label); return ("too long", label, uri); }
         if (m.DurationSec < MinSongSec) { Log("  Rejected (too short): " + label); return ("too short", label, uri); }
+        if (IsArtistBlocked(m.Channel)) { Log("  Rejected (artist blocked): " + label); return ("artist blocked", label, uri); }
+        if (IsSongBlocked(uri, label)) { Log("  Rejected (song blocked): " + label); return ("song blocked", label, uri); }
         bool playerAlive; YtItem item;
         lock (_yt)
         {
@@ -289,10 +349,13 @@ class Engine
     {
         if (!SpotifyConnected) { Log("  Spotify request but Spotify isn't connected - refunding."); return ("no spotify", null, null); }
         if (!SpotifyEnabled) { Log("  Spotify request ignored - Spotify requests are turned off in the dock/app."); return ("spotify off", null, null); }
-        string uri = ExtractTrackUri(input), label = null;
-        if (uri == null) { var (u, n) = await SearchTrack(input); uri = u; label = n; }
-        else { label = await TrackName(uri); }
+        string uri = ExtractTrackUri(input), label = null, artist = null; bool exp = false;
+        if (uri == null) { var t = await SearchTrack(input); uri = t.uri; label = t.label; artist = t.artist; exp = t.exp; }
+        else { var t = await SpotifyMeta(uri); label = t.label; artist = t.artist; exp = t.exp; }
         if (uri == null) { Log("  No track found for: " + input); return ("not found", null, null); }
+        if (BlockExplicit && exp) { Log("  Rejected (explicit): " + (label ?? uri)); return ("explicit", label, uri); }
+        if (IsArtistBlocked(artist)) { Log("  Rejected (artist blocked): " + (label ?? uri)); return ("artist blocked", label, uri); }
+        if (IsSongBlocked(uri, label)) { Log("  Rejected (song blocked): " + (label ?? uri)); return ("song blocked", label, uri); }
         var req = new HttpRequestMessage(HttpMethod.Post, "https://api.spotify.com/v1/me/player/queue?uri=" + Uri.EscapeDataString(uri));
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await Token());
         var resp = await Http.SendAsync(req);
@@ -303,18 +366,22 @@ class Engine
         return ("error", label, uri);
     }
 
-    static async Task<string> TrackName(string uri)
+    // Track name + primary artist + explicit flag for a known uri (used for the blocklist/explicit gates).
+    static async Task<(string label, string artist, bool exp)> SpotifyMeta(string uri)
     {
         try
         {
             var req = new HttpRequestMessage(HttpMethod.Get, "https://api.spotify.com/v1/tracks/" + uri.Replace("spotify:track:", ""));
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await Token());
             var resp = await Http.SendAsync(req);
-            if (!resp.IsSuccessStatusCode) return null;
+            if (!resp.IsSuccessStatusCode) return (null, null, false);
             var t = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
-            return t.GetProperty("name").GetString() + " - " + t.GetProperty("artists")[0].GetProperty("name").GetString();
+            string name = t.GetProperty("name").GetString();
+            string artist = t.GetProperty("artists")[0].GetProperty("name").GetString();
+            bool exp = t.TryGetProperty("explicit", out var ex) && ex.ValueKind == JsonValueKind.True;
+            return (name + " - " + artist, artist, exp);
         }
-        catch { return null; }
+        catch { return (null, null, false); }
     }
 
     static string ExtractTrackUri(string s)
@@ -325,16 +392,19 @@ class Engine
         return null;
     }
 
-    static async Task<(string, string)> SearchTrack(string q)
+    static async Task<(string uri, string label, string artist, bool exp)> SearchTrack(string q)
     {
         var req = new HttpRequestMessage(HttpMethod.Get, "https://api.spotify.com/v1/search?type=track&limit=1&q=" + Uri.EscapeDataString(q));
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await Token());
         var resp = await Http.SendAsync(req);
-        if (!resp.IsSuccessStatusCode) return (null, null);
+        if (!resp.IsSuccessStatusCode) return (null, null, null, false);
         var items = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement.GetProperty("tracks").GetProperty("items");
-        if (items.GetArrayLength() == 0) return (null, null);
+        if (items.GetArrayLength() == 0) return (null, null, null, false);
         var t = items[0];
-        return (t.GetProperty("uri").GetString(), t.GetProperty("name").GetString() + " - " + t.GetProperty("artists")[0].GetProperty("name").GetString());
+        string name = t.GetProperty("name").GetString();
+        string artist = t.GetProperty("artists")[0].GetProperty("name").GetString();
+        bool exp = t.TryGetProperty("explicit", out var ex) && ex.ValueKind == JsonValueKind.True;
+        return (t.GetProperty("uri").GetString(), name + " - " + artist, artist, exp);
     }
 
     static bool _loggedRaw = false;
@@ -393,6 +463,7 @@ class Engine
         if (!root.TryGetProperty("event", out var ev)) return;
         string type = ev.TryGetProperty("type", out var t) ? t.GetString() : "";
         if (!string.Equals(type, "RewardRedemption", StringComparison.OrdinalIgnoreCase)) return;
+        if (RedemptionSource == "twitch") return;   // native EventSub owns redemptions in app/twitch mode - don't double-process the SB copy
         if (!root.TryGetProperty("data", out var data)) return;
         if (!_loggedRaw) { _loggedRaw = true; Log("First redemption raw data: " + data.GetRawText()); }
 
@@ -434,6 +505,13 @@ class Engine
             case "no spotify":  return at + "Spotify isn't connected - send a YouTube link or 'yt <song>' instead.";
             case "spotify off": return at + "Spotify requests are off - try 'yt <song>' for YouTube.";
             case "youtube off": return at + "YouTube requests are off right now.";
+            case "user blocked":  return at + "you're blocked from song requests.";
+            case "cooldown":      return at + "slow down a sec — song requests are on cooldown.";
+            case "queue full":    return at + "the queue is full right now — try again soon.";
+            case "user limit":    return at + "you already have the max songs in the queue.";
+            case "song blocked":  return at + "that song is blocked.";
+            case "artist blocked": return at + "that artist is blocked.";
+            case "explicit":      return at + "explicit tracks aren't allowed here.";
             case "error":       return at + "something went wrong adding that.";
             default:            return null;   // no embed / async states etc. -> silent
         }
@@ -515,6 +593,95 @@ class Engine
         if (changed) SaveRequests();
     }
     static void SaveRequests() { try { File.WriteAllText(RequestsFile, JsonSerializer.Serialize(Reqs)); } catch { } }
+
+    // ---- queue governance helpers -----------------------------------------------------------------
+    static List<string> ReadLines(string path)
+    {
+        var list = new List<string>();
+        try { if (File.Exists(path)) foreach (var l in File.ReadAllLines(path)) { var t = l.Trim(); if (t.Length > 0 && !t.StartsWith("#")) list.Add(t); } } catch { }
+        return list;
+    }
+    static void LoadBlacklists()
+    {
+        var u = new HashSet<string>(ReadLines(UserBlFile), StringComparer.OrdinalIgnoreCase);
+        var s = ReadLines(SongBlFile); var a = ReadLines(ArtistBlFile);
+        UserBlacklist = u; SongBlacklist = s; ArtistBlacklist = a;   // swap whole refs (readers hold a snapshot, no lock needed)
+    }
+    // add | remove | set (set: val is newline-joined). Rewrites the file and reloads. Returns false on a bad kind/op.
+    static bool BlacklistEdit(string kind, string op, string val)
+    {
+        string file = kind == "user" ? UserBlFile : kind == "song" ? SongBlFile : kind == "artist" ? ArtistBlFile : null;
+        if (file == null) return false;
+        val = val ?? "";
+        lock (_blLock)
+        {
+            var list = ReadLines(file);
+            if (op == "add")
+            {
+                var v = val.Trim(); if (v.Length == 0) return false;
+                bool exists = false; foreach (var x in list) if (x.Equals(v, StringComparison.OrdinalIgnoreCase)) { exists = true; break; }
+                if (!exists) list.Add(v);
+            }
+            else if (op == "remove") list.RemoveAll(x => x.Equals(val.Trim(), StringComparison.OrdinalIgnoreCase));
+            else if (op == "set") { list = new List<string>(); foreach (var part in val.Split('\n')) { var t = part.Trim(); if (t.Length > 0) list.Add(t); } }
+            else return false;
+            try { File.WriteAllLines(file, list); } catch { }
+        }
+        LoadBlacklists();
+        Log("Blocklist " + kind + " " + op + (op == "set" ? "" : ": " + val.Trim()));
+        return true;
+    }
+    static bool IsUserBlocked(string user)
+        => !string.IsNullOrEmpty(user) && UserBlacklist.Contains(user.Trim());
+    static bool IsArtistBlocked(string artist)
+    {
+        if (string.IsNullOrEmpty(artist)) return false;
+        var a = artist.ToLowerInvariant();
+        foreach (var raw in ArtistBlacklist) { var t = raw.Trim().ToLowerInvariant(); if (t.Length > 0 && (a == t || a.Contains(t))) return true; }
+        return false;
+    }
+    static bool IsSongBlocked(string uri, string label)
+    {
+        var songs = SongBlacklist; if (songs.Count == 0) return false;
+        string lab = (label ?? "").ToLowerInvariant();
+        string spUri = uri != null && uri.StartsWith("spotify:track:", StringComparison.Ordinal) ? uri : null;
+        string ytId = uri != null && uri.StartsWith("youtube:video:", StringComparison.Ordinal) ? uri.Substring("youtube:video:".Length) : null;
+        foreach (var raw in songs)
+        {
+            var term = raw.Trim(); if (term.Length == 0) continue;
+            if (spUri != null) { var spTerm = ExtractTrackUri(term); if (spTerm != null && spTerm == spUri) return true; }
+            if (ytId != null) { var ytTerm = YouTube.ExtractId(term); if (ytTerm != null && ytTerm == ytId) return true; }
+            if (lab.Length > 0 && lab.Contains(term.ToLowerInvariant())) return true;
+        }
+        return false;
+    }
+    static int CountOutstanding()
+    { lock (_rl) { int n = 0; foreach (var r in Reqs) if (r.status == "queued") n++; return n; } }
+    static int CountOutstandingForUser(string user)
+    { lock (_rl) { int n = 0; foreach (var r in Reqs) if (r.status == "queued" && string.Equals(r.user, user, StringComparison.OrdinalIgnoreCase)) n++; return n; } }
+    // Viewer-facing pre-checks (not applied to the streamer's own dock add). Returns a rejection status, or null to allow.
+    static string CheckGate(string user)
+    {
+        if (IsUserBlocked(user)) return "user blocked";
+        var now = DateTime.UtcNow;
+        lock (_gateLock)
+        {
+            if (SrCooldownSec > 0 && (now - _lastReqUtc).TotalSeconds < SrCooldownSec) return "cooldown";
+            if (SrPerUserCooldownSec > 0 && !string.IsNullOrEmpty(user)
+                && _lastReqByUser.TryGetValue(user, out var last) && (now - last).TotalSeconds < SrPerUserCooldownSec) return "cooldown";
+        }
+        if (MaxQueueLength > 0 && CountOutstanding() >= MaxQueueLength) return "queue full";
+        if (MaxRequestsPerUser > 0 && !string.IsNullOrEmpty(user) && CountOutstandingForUser(user) >= MaxRequestsPerUser) return "user limit";
+        return null;
+    }
+    static void MarkRequested(string user)   // called only after a successful viewer request, to start the cooldown(s)
+    { var now = DateTime.UtcNow; lock (_gateLock) { _lastReqUtc = now; if (!string.IsNullOrEmpty(user)) _lastReqByUser[user] = now; } }
+    static void AppendJsonArray(StringBuilder sb, string name, IEnumerable<string> items)
+    {
+        sb.Append(",\"").Append(name).Append("\":[");
+        bool first = true; foreach (var it in items) { if (!first) sb.Append(','); first = false; sb.Append('"').Append(JEsc(it)).Append('"'); }
+        sb.Append(']');
+    }
 
     // Skip Spotify songs the streamer marked "skip when it plays" almost the instant they start, instead of
     // waiting on the 2.5s now-playing poll (which let ~3s of the song leak through). Cheap: it only fast-polls
@@ -604,6 +771,103 @@ class Engine
 
     static void SetNow(string j) { lock (_np) NowJson = j; }
     static string GetNow() { lock (_np) return NowJson; }
+
+    // ---- OBS now-playing file outputs -------------------------------------------------------------
+    // Write the current track to plain files that an OBS "Text (GDI+)" source (read-from-file) and an
+    // Image source can point at - the classic local now-playing overlay, no browser source required.
+    // Called from the Spotify poll and the YouTube player report; debounced so the disk is only touched
+    // when the visible line (or the art) actually changes, not on every 2.5s / 0.8s poll.
+    static string LookupRequester(string uri)
+    {
+        if (string.IsNullOrEmpty(uri)) return null;
+        lock (_rl) { var r = Reqs.FindLast(x => x.uri == uri && (x.status == "queued" || x.status == "played")); return r?.user; }
+    }
+    static string SpotifyTrackUrl(string uri)
+        => string.IsNullOrEmpty(uri) || !uri.StartsWith("spotify:track:", StringComparison.Ordinal)
+            ? "" : "https://open.spotify.com/track/" + uri.Substring("spotify:track:".Length);
+
+    static void PublishOutputs(string source, string title, string artist, string artUrl, string requester, string url, bool playing)
+    {
+        if (!OutputEnabled) return;
+        try
+        {
+            string mainLine, artistOut, titleOut, reqOut, coverUrl;
+            if (!playing && PauseBehavior != "nothing")   // paused/idle: clear the files, or show custom text
+            {
+                mainLine = PauseBehavior == "text" ? (CustomPauseText ?? "") : "";
+                artistOut = ""; titleOut = ""; reqOut = ""; coverUrl = "";
+            }
+            else if (!playing) return;                    // "nothing" (default): leave the last song shown
+            else
+            {
+                mainLine = FillTokens(OutputFormat, artist, title, requester, url);
+                artistOut = artist ?? ""; titleOut = title ?? "";
+                reqOut = string.IsNullOrEmpty(requester) ? "" : (RequesterPrefix ?? "") + requester;
+                coverUrl = artUrl ?? "";
+            }
+            string pad = AppendSpaces && SpaceCount > 0 ? new string(' ', SpaceCount) : "";
+            if (pad.Length > 0 && mainLine.Length > 0) mainLine += pad;
+
+            string key = mainLine + "" + artistOut + "" + titleOut + "" + reqOut;
+            lock (_outLock)
+            {
+                if (key != _outLastKey)
+                {
+                    _outLastKey = key;
+                    WriteOut("nowplaying.txt", mainLine);
+                    if (SplitOutput)
+                    {
+                        WriteOut("artist.txt", pad.Length > 0 && artistOut.Length > 0 ? artistOut + pad : artistOut);
+                        WriteOut("title.txt",  pad.Length > 0 && titleOut.Length  > 0 ? titleOut  + pad : titleOut);
+                        WriteOut("requester.txt", reqOut);
+                    }
+                }
+                if (DownloadCover && coverUrl != _outLastArtUrl) { _outLastArtUrl = coverUrl; _ = UpdateCover(coverUrl); }
+            }
+        }
+        catch { }
+    }
+
+    static void WriteOut(string name, string content)
+    { try { File.WriteAllText(Path.Combine(OutputDir, name), content ?? "", new UTF8Encoding(false)); } catch { } }
+
+    // {artist} {single_artist} {title} {req} {requester} {url} {uri}, plus a {{ ... }} block that is only
+    // kept when the song was actually requested by someone (so "requested by X" vanishes for autoplay).
+    static string FillTokens(string fmt, string artist, string title, string requester, string url)
+    {
+        if (string.IsNullOrEmpty(fmt)) return "";
+        bool hasReq = !string.IsNullOrEmpty(requester);
+        // Substitute the value tokens FIRST, so a {req}/{title} that ends a {{ ... }} block can't collide
+        // with the block's closing braces (e.g. "{{ requested by {req}}}" -> "}}}" would mis-parse).
+        fmt = fmt.Replace("{single_artist}", artist ?? "").Replace("{artist}", artist ?? "")
+                 .Replace("{title}", title ?? "").Replace("{requester}", requester ?? "").Replace("{req}", requester ?? "")
+                 .Replace("{url}", url ?? "").Replace("{uri}", url ?? "");
+        // Then resolve the conditional block: keep its inner text only when the song was actually requested.
+        return Regex.Replace(fmt, @"\{\{(.*?)\}\}", m => hasReq ? m.Groups[1].Value : "", RegexOptions.Singleline);
+    }
+
+    // Save album/thumbnail art to cover.png (best-effort, atomic). An empty url writes a 1x1 transparent
+    // png so an Image source pointed at cover.png doesn't keep showing the last song while nothing plays.
+    static readonly SemaphoreSlim _coverLock = new SemaphoreSlim(1, 1);
+    static async Task UpdateCover(string url)
+    {
+        string path = Path.Combine(OutputDir, "cover.png"), tmp = path + ".tmp";
+        await _coverLock.WaitAsync();
+        try
+        {
+            byte[] bytes;
+            if (string.IsNullOrEmpty(url))
+            {
+                try { bytes = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="); }
+                catch { return; }
+            }
+            else bytes = await Http.GetByteArrayAsync(url);
+            File.WriteAllBytes(tmp, bytes);
+            File.Move(tmp, path, true);
+        }
+        catch { try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
+        finally { _coverLock.Release(); }
+    }
     static string JEsc(string s)
     {
         if (string.IsNullOrEmpty(s)) return "";
@@ -670,7 +934,7 @@ class Engine
                 {
                     // clear _spotUserPaused too - with no Spotify to pause it's meaningless, and if left set it would wedge the YouTube handoff (userHold)
                     bool ytA; lock (_yt) { _spotNext.Clear(); _spotPlaying = false; _spotUserPaused = false; _spotProgMs = 0; _spotDurMs = 0; _spotSeenUtc = DateTime.UtcNow; ytA = YtActive != null; }
-                    if (!ytA) SetNow("{\"playing\":false}");
+                    if (!ytA) { SetNow("{\"playing\":false}"); PublishOutputs("spotify", null, null, null, null, null, false); }
                     await Task.Delay(2500);
                     continue;
                 }
@@ -706,7 +970,7 @@ class Engine
                 else if (string.IsNullOrWhiteSpace(body))
                 {
                     lock (_yt) { _spotPlaying = false; _spotProgMs = 0; _spotDurMs = 0; _spotSeenUtc = DateTime.UtcNow; }
-                    if (!ytActive) SetNow("{\"playing\":false}");
+                    if (!ytActive) { SetNow("{\"playing\":false}"); PublishOutputs("spotify", null, null, null, null, null, false); }
                 }
                 else
                 {
@@ -715,7 +979,7 @@ class Engine
                     if (!root.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object)
                     {
                         lock (_yt) { _spotPlaying = false; _spotProgMs = 0; _spotDurMs = 0; _spotSeenUtc = DateTime.UtcNow; }
-                        if (!ytActive) SetNow("{\"playing\":false}");
+                        if (!ytActive) { SetNow("{\"playing\":false}"); PublishOutputs("spotify", null, null, null, null, null, false); }
                     }
                     else
                     {
@@ -726,7 +990,10 @@ class Engine
                         int prog = root.TryGetProperty("progress_ms", out var pm) && pm.ValueKind == JsonValueKind.Number && pm.TryGetInt32(out var pv) ? pv : 0;
                         lock (_yt) { _spotPlaying = isPlaying; if (isPlaying) _spotUserPaused = false; _spotProgMs = prog; _spotDurMs = dur; _spotSeenUtc = DateTime.UtcNow; }   // feeds the YT handoff
                         if (!ytActive)   // while a YouTube item plays, the overlay player owns the feed
+                        {
                             SetNow("{\"playing\":" + (isPlaying ? "true" : "false") + ",\"source\":\"spotify\",\"title\":\"" + JEsc(name) + "\",\"artist\":\"" + JEsc(artist) + "\",\"art\":\"" + JEsc(art) + "\",\"progress\":" + prog + ",\"duration\":" + dur + NextJson() + "}");
+                            PublishOutputs("spotify", name, artist, art, LookupRequester(curUri), SpotifyTrackUrl(curUri), isPlaying);
+                        }
                     }
                 }
             }
@@ -1085,7 +1352,9 @@ class Engine
         if (ev == "poll" && id == it.id && int.TryParse(q["pos"], out var pos))
         {
             int dur = int.TryParse(q["dur"], out var d) && d > 0 ? d : it.durSec * 1000;
-            SetNow(BuildYtNow(it, pos, dur, q["playing"] == "1"));   // the player drives the feed while YouTube is active
+            bool ytPlaying = q["playing"] == "1";
+            SetNow(BuildYtNow(it, pos, dur, ytPlaying));   // the player drives the feed while YouTube is active
+            PublishOutputs("youtube", it.title, it.channel, "https://i.ytimg.com/vi/" + it.id + "/hqdefault.jpg", it.user, "https://youtu.be/" + it.id, ytPlaying);
         }
         return "{\"action\":\"play\",\"videoId\":\"" + it.id + "\",\"epoch\":" + epoch +
                ",\"capMs\":" + (MaxSongSec + 5) * 1000 + ",\"vol\":" + vol + ",\"showCard\":" + (showCard ? "true" : "false") +
@@ -1157,6 +1426,31 @@ class Engine
         sb.Append(",\"showCard\":").Append(showCard ? "true" : "false");
         sb.Append(",\"showVideo\":").Append(showVideo ? "true" : "false");
         sb.Append(",\"maxSec\":").Append(maxSec);
+        sb.Append(",\"outputEnabled\":").Append(OutputEnabled ? "true" : "false");
+        sb.Append(",\"outputFormat\":\"").Append(JEsc(OutputFormat)).Append("\"");
+        sb.Append(",\"splitOutput\":").Append(SplitOutput ? "true" : "false");
+        sb.Append(",\"downloadCover\":").Append(DownloadCover ? "true" : "false");
+        sb.Append(",\"pauseBehavior\":\"").Append(JEsc(PauseBehavior)).Append("\"");
+        sb.Append(",\"customPauseText\":\"").Append(JEsc(CustomPauseText)).Append("\"");
+        sb.Append(",\"maxQueue\":").Append(MaxQueueLength);
+        sb.Append(",\"maxPerUser\":").Append(MaxRequestsPerUser);
+        sb.Append(",\"cooldown\":").Append(SrCooldownSec);
+        sb.Append(",\"userCooldown\":").Append(SrPerUserCooldownSec);
+        sb.Append(",\"blockExplicit\":").Append(BlockExplicit ? "true" : "false");
+        AppendJsonArray(sb, "blUsers", UserBlacklist);
+        AppendJsonArray(sb, "blSongs", SongBlacklist);
+        AppendJsonArray(sb, "blArtists", ArtistBlacklist);
+        sb.Append(",\"botEnabled\":").Append(TwitchBotEnabled ? "true" : "false");
+        sb.Append(",\"botConnected\":").Append(_botConnected ? "true" : "false");
+        sb.Append(",\"botMode\":\"").Append(JEsc(TwitchAuthMode)).Append("\"");
+        sb.Append(",\"botUser\":\"").Append(JEsc(TwitchBotUser ?? "")).Append("\"");
+        sb.Append(",\"botChannel\":\"").Append(JEsc(TwitchChannel ?? "")).Append("\"");
+        sb.Append(",\"botClientId\":\"").Append(JEsc(TwitchClientId ?? "")).Append("\"");
+        sb.Append(",\"botHasToken\":").Append(!string.IsNullOrEmpty(TwitchBotToken) ? "true" : "false");
+        sb.Append(",\"botHasSecret\":").Append(!string.IsNullOrEmpty(TwitchClientSecret) ? "true" : "false");
+        sb.Append(",\"redemptionSource\":\"").Append(JEsc(RedemptionSource)).Append("\"");
+        sb.Append(",\"manageReward\":").Append(ManageReward ? "true" : "false");
+        sb.Append(",\"srForBits\":").Append(SrForBits ? "true" : "false");
         sb.Append(",\"yt\":[");
         for (int i = 0; i < yt.Count; i++)
         {
@@ -1238,6 +1532,80 @@ class Engine
                 try { File.WriteAllText(ShowVideoFile, on ? "1" : "0"); } catch { }
                 Log("YouTube video " + (on ? "ON - new requests fetch + show the video" : "off - audio-only"));
                 return "{\"ok\":true,\"showVideo\":" + (on ? "true" : "false") + "}";
+            }
+            case "output":
+            {
+                bool on = q["on"] == "1";
+                OutputEnabled = on; SetConfigValue("OutputEnabled", on ? "1" : "0");
+                if (on) { try { Directory.CreateDirectory(OutputDir); } catch { } }
+                Log("OBS text files " + (on ? "enabled -> " + OutputDir : "disabled") + " from the dock.");
+                return "{\"ok\":true,\"outputEnabled\":" + (on ? "true" : "false") + "}";
+            }
+            case "outcfg":   // OBS now-playing output settings - apply LIVE (PublishOutputs reads these each tick)
+            {
+                string k = (q["k"] ?? "").ToLowerInvariant(); string v = q["v"] ?? "";
+                switch (k)
+                {
+                    case "format":    OutputFormat = string.IsNullOrEmpty(v) ? "{artist} - {title}" : v; SetConfigValue("OutputFormat", OutputFormat); break;
+                    case "split":     SplitOutput = v == "1"; SetConfigValue("SplitOutput", v == "1" ? "1" : "0"); break;
+                    case "cover":     DownloadCover = v == "1"; SetConfigValue("DownloadCover", v == "1" ? "1" : "0"); break;
+                    case "pause":     { string p = v.ToLowerInvariant(); if (p != "clear" && p != "text") p = "nothing"; PauseBehavior = p; SetConfigValue("PauseBehavior", p); break; }
+                    case "pausetext": CustomPauseText = v; SetConfigValue("CustomPauseText", v); break;
+                    default: return "{\"ok\":false}";
+                }
+                lock (_outLock) { _outLastKey = null; _outLastArtUrl = null; }   // force a rewrite on the next publish so the change shows immediately
+                Log("OBS output '" + k + "' updated from the dock.");
+                return "{\"ok\":true}";
+            }
+            case "rule":
+            {
+                string k = (q["k"] ?? "").ToLowerInvariant(); string v = q["v"] ?? "";
+                switch (k)
+                {
+                    case "maxqueue":     if (int.TryParse(v, out var a1)) { MaxQueueLength = Math.Max(0, a1); SetConfigValue("MaxQueueLength", MaxQueueLength.ToString()); } break;
+                    case "maxperuser":   if (int.TryParse(v, out var a2)) { MaxRequestsPerUser = Math.Max(0, a2); SetConfigValue("MaxRequestsPerUser", MaxRequestsPerUser.ToString()); } break;
+                    case "cooldown":     if (int.TryParse(v, out var a3)) { SrCooldownSec = Math.Max(0, a3); SetConfigValue("SrCooldownSec", SrCooldownSec.ToString()); } break;
+                    case "usercooldown": if (int.TryParse(v, out var a4)) { SrPerUserCooldownSec = Math.Max(0, a4); SetConfigValue("SrPerUserCooldownSec", SrPerUserCooldownSec.ToString()); } break;
+                    case "explicit":     BlockExplicit = v == "1"; SetConfigValue("BlockExplicit", BlockExplicit ? "1" : "0"); break;
+                    default: return "{\"ok\":false}";
+                }
+                Log("Rule " + k + " set to '" + v + "' from the dock.");
+                return "{\"ok\":true}";
+            }
+            case "blacklist":
+            {
+                bool ok = BlacklistEdit((q["kind"] ?? "").ToLowerInvariant(), (q["op"] ?? "").ToLowerInvariant(), q["val"] ?? "");
+                return "{\"ok\":" + (ok ? "true" : "false") + "}";
+            }
+            case "twitchauth":   // app mode: run the one-time Twitch OAuth consent (opens the browser)
+            {
+                string status = await TwitchStartAuth();
+                return "{\"ok\":true,\"status\":\"" + JEsc(status) + "\"}";
+            }
+            case "commands":   // return the chat-command definitions for the dock editor
+                return "{\"commands\":" + JsonSerializer.Serialize(Commands) + "}";
+            case "cmdedit":    // edit one field of one command (applies live)
+            {
+                bool ok = EditCommand(q["name"] ?? "", (q["field"] ?? "").ToLowerInvariant(), q["value"] ?? "");
+                return "{\"ok\":" + (ok ? "true" : "false") + "}";
+            }
+            case "botcfg":   // NON-secret Twitch bot settings from the dock (tokens/secret stay in config.txt); needs a Restart to reconnect
+            {
+                string k = (q["k"] ?? "").ToLowerInvariant(); string v = q["v"] ?? "";
+                switch (k)
+                {
+                    case "enabled":  TwitchBotEnabled = v == "1"; SetConfigValue("TwitchBotEnabled", v == "1" ? "1" : "0"); break;
+                    case "mode":     { string mm = v.ToLowerInvariant() == "app" ? "app" : "irc"; TwitchAuthMode = mm; SetConfigValue("TwitchAuthMode", mm); break; }
+                    case "botuser":  TwitchBotUser = v.Trim(); SetConfigValue("TwitchBotUsername", v.Trim()); break;
+                    case "channel":  { string ch = v.Trim().TrimStart('#').ToLowerInvariant(); TwitchChannel = ch; SetConfigValue("TwitchChannel", ch); break; }
+                    case "clientid": TwitchClientId = v.Trim(); SetConfigValue("TwitchClientId", v.Trim()); break;
+                    case "redemptionsource": { string rs = v.ToLowerInvariant() == "twitch" ? "twitch" : "sb"; RedemptionSource = rs; SetConfigValue("RedemptionSource", rs); break; }
+                    case "managereward": ManageReward = v == "1"; SetConfigValue("ManageReward", v == "1" ? "1" : "0"); break;
+                    case "srforbits":    SrForBits = v == "1"; SetConfigValue("SrForBits", v == "1" ? "1" : "0"); break;
+                    default: return "{\"ok\":false}";
+                }
+                Log("Bot setting '" + k + "' updated from the dock (Restart to apply).");
+                return "{\"ok\":true}";
             }
             case "pause":
             {
