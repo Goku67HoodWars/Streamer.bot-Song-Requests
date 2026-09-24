@@ -261,7 +261,7 @@ partial class Engine
         req.Content = new FormUrlEncodedContent(new Dictionary<string, string> { {"grant_type","refresh_token"}, {"refresh_token",RefreshToken} });
         using var resp = await Http.SendAsync(req);
         string body = await resp.Content.ReadAsStringAsync();
-        if (!resp.IsSuccessStatusCode) throw new Exception((int)resp.StatusCode + ": " + body);
+        if (!resp.IsSuccessStatusCode) { SpotifyConnected = false; throw new Exception((int)resp.StatusCode + ": " + body); }   // flip false so TryReconnectSpotify can re-auth mid-session
         var json = JsonDocument.Parse(body).RootElement;
         AccessToken = json.GetProperty("access_token").GetString();
         AccessExpires = DateTime.UtcNow.AddSeconds(json.GetProperty("expires_in").GetInt32() - 60);
@@ -1084,6 +1084,7 @@ partial class Engine
             if (path == "" || path == "/nowplaying") { body = GetNow(); acao = "*"; }            // public read (already on-stream)
             else if (path == "/dock") { body = RootFile("dock.html"); type = "text/html; charset=utf-8"; }
             else if (path == "/youtube") { body = RootFile("youtube.html"); type = "text/html; charset=utf-8"; }
+            else if (path == "/ytaudio") { await ServeAudio(ctx, q["id"], origin); return; }   // cached local audio: no token gate, so a playing song survives an engine restart (loopback-only endpoint)
             else if (path == "/token")
             {
                 // Bootstrap the control token for a local page loaded via file:// or http loopback;
@@ -1096,7 +1097,6 @@ partial class Engine
             // after the engine restarted - give it CORS on the 403 so it can read it and re-fetch /token.
             else if (!string.Equals(q["tok"], CtlToken, StringComparison.Ordinal) || string.IsNullOrEmpty(CtlToken))
                 { ctx.Response.StatusCode = 403; if (okOrigin) acao = origin ?? "*"; }
-            else if (path == "/ytaudio") { await ServeAudio(ctx, q["id"], origin); return; }   // binary audio (writes + closes its own response)
             else if (path == "/player") { body = HandlePlayer(q); acao = origin; }
             else if (path == "/queue") { body = BuildQueueJson(); acao = origin; }
             else if (path == "/cmd") { body = await HandleCmd(q); acao = origin; }
@@ -1320,8 +1320,44 @@ partial class Engine
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await Token());
             req.Content = new StringContent("");
             using var resp = await Http.SendAsync(req);
+            // Resume after a long YouTube item can 404 if Spotify Connect dropped the paused device. Find a
+            // device and TRANSFER playback to it so the bed comes back instead of leaving dead air on stream.
+            if (play && (int)resp.StatusCode == 404)
+            {
+                string dev = await FirstSpotifyDevice();
+                if (dev != null)
+                {
+                    using var tr = new HttpRequestMessage(HttpMethod.Put, "https://api.spotify.com/v1/me/player");
+                    tr.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await Token());
+                    tr.Content = new StringContent("{\"device_ids\":[\"" + JEsc(dev) + "\"],\"play\":true}", Encoding.UTF8, "application/json");
+                    using var tresp = await Http.SendAsync(tr);
+                    if (!tresp.IsSuccessStatusCode) Log("Spotify resume: couldn't reactivate a device (" + (int)tresp.StatusCode + ").");
+                }
+                else Log("Spotify resume failed: no available device (open Spotify and press play).");
+            }
         }
         catch { }
+    }
+
+    // The streamer's Spotify device to (re)activate: prefer the currently-active one, else the first listed.
+    static async Task<string> FirstSpotifyDevice()
+    {
+        try
+        {
+            string body = await GetBody("https://api.spotify.com/v1/me/player/devices");
+            if (string.IsNullOrWhiteSpace(body)) return null;
+            var arr = JsonDocument.Parse(body).RootElement.GetProperty("devices");
+            string first = null;
+            foreach (var d in arr.EnumerateArray())
+            {
+                string id = d.TryGetProperty("id", out var di) && di.ValueKind == JsonValueKind.String ? di.GetString() : null;
+                if (id == null) continue;
+                if (first == null) first = id;
+                if (d.TryGetProperty("is_active", out var ia) && ia.ValueKind == JsonValueKind.True) return id;
+            }
+            return first;
+        }
+        catch { return null; }
     }
 
     static async Task SpotifySkipNext()
@@ -1518,12 +1554,19 @@ partial class Engine
         {
             case "skip":
             {
-                // Skip advances the QUEUE: a playing YouTube item is skipped; else if a YouTube item is
-                // waiting, jump straight to it (pause Spotify, play it now); else skip the Spotify track.
-                bool active, queued;
-                lock (_yt) { active = YtActive != null; queued = YtActive == null && YtQ.Count > 0; if (queued) _skipToYt = true; }
+                // Skip advances the QUEUE: a playing YouTube item is skipped; else if a YouTube item can play
+                // RIGHT NOW (player source loaded + its audio downloaded), jump straight to it; otherwise skip
+                // the Spotify bed. Never a no-op: if we can't hand off to YouTube, we always advance Spotify.
+                bool active, startYt;
+                lock (_yt)
+                {
+                    active = YtActive != null;
+                    bool alive = (DateTime.UtcNow - _lastPlayerSeen).TotalSeconds <= 8;
+                    startYt = !active && YtEnabled && alive && YtQ.Count > 0 && YtQ[0].file != null && !YtQ[0].dlFailed;
+                    if (startYt) _skipToYt = true;   // the conductor hands off within ~500ms
+                }
                 if (active) await FinishActive("skipped");
-                else if (!queued) await SpotifySkipNext();   // queued -> the conductor starts it immediately (below)
+                else if (!startYt) await SpotifySkipNext();   // no playable YouTube to jump to -> skip the Spotify track
                 return "{\"ok\":true}";
             }
             case "remove":

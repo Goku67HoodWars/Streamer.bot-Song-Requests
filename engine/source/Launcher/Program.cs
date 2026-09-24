@@ -65,6 +65,7 @@ class Launcher
 
         using var mx = new Mutex(false, "Global\\SongRequestsLauncherUpdate");
         bool held = false; try { held = mx.WaitOne(TimeSpan.FromSeconds(20)); } catch (AbandonedMutexException) { held = true; } catch { }
+        if (!held) return;   // another launcher is already updating -> don't double-download/extract into the same folder
         try
         {
             string tag, wantRt;
@@ -80,7 +81,7 @@ class Launcher
             // Runtime bump? Can't self-replace the running launcher on launch -> flag it for the in-app
             // updater (the GUI offers the one-click big hop). The app.zip part still applies below.
             bool runtimePending = ReadTrim(Path.Combine(appDir, "runtime.txt")) != wantRt;
-            if (runtimePending) { try { File.WriteAllText(Path.Combine(appDir, "update-pending.txt"), tag); } catch { } }
+            if (runtimePending) { try { File.WriteAllText(Path.Combine(appDir, "update-pending.txt"), tag); } catch { } return; }   // runtime bump: let the GUI apply app+runtime together (don't leave a new app on the old runtime)
 
             // If the core is RUNNING (engine mid-session / GUI open), its files are loaded and locked -
             // extracting now would fail halfway and leave a mixed-version app\. Probe the DLL for an

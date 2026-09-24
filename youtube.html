@@ -38,10 +38,11 @@
   a.addEventListener("error", () => { if (cur) report("error", "&code=" + (a.error ? a.error.code : "?")); });
   a.addEventListener("timeupdate", () => { if (cur && capMs > 0 && a.currentTime * 1000 > capMs) report("ended"); });
 
-  function report(ev, extra){
+  async function report(ev, extra){
     const id = cur, epoch = ep;
     stopLocal();
-    fetch(BASE + "/player?tok=" + TOK + "&ev=" + ev + "&id=" + id + "&epoch=" + epoch + (extra || "")).catch(()=>{});
+    const u = () => BASE + "/player?tok=" + TOK + "&ev=" + ev + "&id=" + id + "&epoch=" + epoch + (extra || "");
+    try { const r = await fetch(u()); if (r.status === 403){ await ensureTok(true); fetch(u()).catch(()=>{}); } } catch(_){}   // token rotated -> re-bootstrap + retry
   }
   function stopLocal(){
     cur = null; capMs = 0;

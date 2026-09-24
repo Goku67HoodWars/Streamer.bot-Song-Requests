@@ -326,7 +326,13 @@
     if (force || TOK === "__" + "SQTOKEN__"){ try { const r = await fetch(API + "/token"); if (r.ok) TOK = (await r.json()).tok; } catch(_){} }
   }
   function fmt(s){ s = Math.max(0, s|0); return (s/60|0) + ":" + String(s%60).padStart(2,"0"); }
-  function cmd(q){ return fetch(API + "/cmd?tok=" + TOK + "&" + q).then(r => r.json()).catch(() => null); }
+  async function cmd(q){
+    try {
+      let r = await fetch(API + "/cmd?tok=" + TOK + "&" + q);
+      if (r.status === 403){ await ensureTok(true); r = await fetch(API + "/cmd?tok=" + TOK + "&" + q); }   // token rotated (engine restarted) -> re-bootstrap + retry
+      return await r.json();
+    } catch(_){ return null; }
+  }
 
   $("skip").onclick = async () => {
     if (skipBusy) return;

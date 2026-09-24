@@ -101,11 +101,17 @@ local function fix_player_audio()
       if obs.obs_source_get_unversioned_id(src) == "browser_source" then
         local st = obs.obs_source_get_settings(src)
         local url = obs.obs_data_get_string(st, "url")
-        obs.obs_data_release(st)
-        if url ~= nil and string.find(string.lower(url), "127.0.0.1:8090/youtube", 1, true)
-           and obs.obs_source_get_monitoring_type(src) == obs.OBS_MONITORING_TYPE_NONE then
-          obs.obs_source_set_monitoring_type(src, obs.OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT)
+        local reroute = obs.obs_data_get_bool(st, "reroute_audio")
+        if url ~= nil and string.find(string.lower(url), "127.0.0.1:8090/youtube", 1, true) then
+          if not reroute then                                     -- audio must go through OBS for monitoring to matter
+            obs.obs_data_set_bool(st, "reroute_audio", true)
+            obs.obs_source_update(src, st)
+          end
+          if obs.obs_source_get_monitoring_type(src) == obs.OBS_MONITORING_TYPE_NONE then
+            obs.obs_source_set_monitoring_type(src, obs.OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT)
+          end
         end
+        obs.obs_data_release(st)
       end
     end
     obs.source_list_release(sources)
