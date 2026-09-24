@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.1 — 2026-09-24
+
+- **OBS audio fix** — the auto-start script now sets the "YouTube Player" source to **Monitor and Output** (and repairs an existing source still set to "monitor off"), so the streamer hears YouTube too. Fixes "YouTube plays but I can't hear it."
+- **Spotify self-heal** — the engine re-reads your keys/token and retries authentication when a request arrives while disconnected, so reconnecting Spotify in the app takes effect **without an engine restart**.
+- **Docs** — corrected the OBS audio-monitoring step in the README (it wrongly said to leave monitoring off).
+
 ## v1.1.0 — 2026-08-23
 
 All additions are **optional**; the existing Streamer.bot flow is unchanged.

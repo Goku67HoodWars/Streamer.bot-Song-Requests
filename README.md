@@ -67,7 +67,7 @@ Drag `nowplaying.html` into OBS (or add a Browser source pointing at it) and siz
    - **Spotify (optional):** make a free app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) — Redirect URI `http://127.0.0.1:8888/callback`, tick **Web API** — then paste the **Client ID + Secret** and click **Connect Spotify** *(needs Premium)*. **Or skip it → YouTube-only.**
    - **Chat replies (optional):** hit the chat-setup button and paste the copied `Song Requests Announce` action into Streamer.bot (*Actions → Import*).
 5. **In OBS** — two sources + one script:
-   - **Audio player** (required): *Sources → + → Browser*, URL `http://127.0.0.1:8090/youtube`, tick **Control audio via OBS**. It stays **blank on screen** — it only plays the songs. Leave **Audio Monitoring off** (Monitor + Output double-captures and echoes).
+   - **Audio player** (required): the **auto-start script creates this for you** — a Browser source at `http://127.0.0.1:8090/youtube` with **Control audio via OBS** + **Monitor and Output**, so **you *and* the stream hear it**. (If you ever add it by hand, set its **Audio Monitoring → Monitor and Output**.) It stays **blank on screen** — it only plays the songs.
    - **Control dock:** *View → Docks → Custom Browser Docks…*, URL `http://127.0.0.1:8090/dock`. This is your control center.
    - **Auto-start:** the app's **“Auto-start with OBS”** copies a script path → *OBS → Tools → Scripts → + → paste → Open*. The engine now runs whenever OBS is open.
    - **Sound:** click **“Fix YouTube sound in OBS”** once, then fully reopen OBS.

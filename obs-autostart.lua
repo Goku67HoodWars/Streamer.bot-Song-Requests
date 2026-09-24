@@ -3,8 +3,8 @@
 --  ONE script that does the whole OBS side:
 --    * starts the request engine when OBS launches, stops it when OBS closes
 --    * makes sure the "YouTube Player" audio source exists, with the correct
---      audio routing (Control audio via OBS, monitoring OFF) - no manual source,
---      no audio-settings fiddling
+--      audio routing (Control audio via OBS + Monitor and Output, so the streamer
+--      AND the stream hear it) - no manual source, no audio-settings fiddling
 --
 --  SET UP ONCE:
 --    OBS  ->  Tools  ->  Scripts  ->  the  +  button  ->  pick this file.
@@ -81,12 +81,35 @@ local function ensure_source()
   obs.obs_data_release(settings)
 
   if source ~= nil then
-    -- monitoring OFF: Monitor+Output would double-capture via Desktop Audio and echo
-    obs.obs_source_set_monitoring_type(source, obs.OBS_MONITORING_TYPE_NONE)
+    -- Monitor AND Output so the streamer hears it too. reroute_audio=true means the audio is captured
+    -- by OBS (not routed through Desktop Audio), so Monitor+Output does NOT double-capture or echo.
+    obs.obs_source_set_monitoring_type(source, obs.OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT)
     obs.obs_scene_add(scene, source)
     obs.obs_source_release(source)
   end
   obs.obs_source_release(scene_source)
+end
+
+-- Make the player source audible to the streamer AND the stream (Monitor and Output). Runs every load,
+-- so it also repairs EXISTING sources that were created by an older version with monitoring OFF - which
+-- is why "I see YouTube playing but can't hear it" happened. Only touches sources still set to OFF, so a
+-- streamer who deliberately chose Monitor-Only is left alone.
+local function fix_player_audio()
+  local sources = obs.obs_enum_sources()
+  if sources ~= nil then
+    for _, src in ipairs(sources) do
+      if obs.obs_source_get_unversioned_id(src) == "browser_source" then
+        local st = obs.obs_source_get_settings(src)
+        local url = obs.obs_data_get_string(st, "url")
+        obs.obs_data_release(st)
+        if url ~= nil and string.find(string.lower(url), "127.0.0.1:8090/youtube", 1, true)
+           and obs.obs_source_get_monitoring_type(src) == obs.OBS_MONITORING_TYPE_NONE then
+          obs.obs_source_set_monitoring_type(src, obs.OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT)
+        end
+      end
+    end
+    obs.source_list_release(sources)
+  end
 end
 
 local function on_event(event)
@@ -96,6 +119,7 @@ local function on_event(event)
   if event == obs.OBS_FRONTEND_EVENT_FINISHED_LOADING
      or event == obs.OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED then
     ensure_source()
+    fix_player_audio()
   end
 end
 
@@ -110,7 +134,8 @@ end
 function script_load(settings)
   run("--engine")
   obs.obs_frontend_add_event_callback(on_event)
-  ensure_source()   -- if you added the script mid-session, scenes are already up -> create it now
+  ensure_source()      -- if you added the script mid-session, scenes are already up -> create it now
+  fix_player_audio()   -- repair monitoring on an existing (older-version) player source
 end
 
 -- runs when OBS closes (or the script is removed) -> shut the engine down

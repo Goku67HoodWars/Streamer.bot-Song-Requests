@@ -345,9 +345,45 @@ partial class Engine
         if (path == null) Log("  Couldn't fetch " + (wantVid ? "video" : "audio") + " for: " + it.title + " (it'll be skipped when its turn comes).");
     }
 
+    static DateTime _lastSpotReconnect = DateTime.MinValue;
+    static readonly SemaphoreSlim _reconnLock = new SemaphoreSlim(1, 1);
+    // Self-heal: if a Spotify request arrives while disconnected, re-read the (possibly just-updated) keys +
+    // refresh token from disk and try to authenticate - so reconnecting in the app takes effect WITHOUT an
+    // engine restart. Throttled so a burst of requests can't hammer the token endpoint.
+    static async Task<bool> TryReconnectSpotify()
+    {
+        if (SpotifyConnected) return true;
+        if ((DateTime.UtcNow - _lastSpotReconnect).TotalSeconds < 20) return false;
+        await _reconnLock.WaitAsync();
+        try
+        {
+            if (SpotifyConnected) return true;
+            if ((DateTime.UtcNow - _lastSpotReconnect).TotalSeconds < 20) return false;
+            _lastSpotReconnect = DateTime.UtcNow;
+            try
+            {
+                if (File.Exists(ConfigFile))
+                    foreach (var raw in File.ReadAllLines(ConfigFile))
+                    {
+                        var line = raw.Trim(); int i = line.IndexOf('=');
+                        if (i <= 0 || line.StartsWith("#")) continue;
+                        var k = line.Substring(0, i).Trim(); var v = line.Substring(i + 1).Trim();
+                        if (k.Equals("SpotifyClientId", StringComparison.OrdinalIgnoreCase)) ClientId = v;
+                        else if (k.Equals("SpotifyClientSecret", StringComparison.OrdinalIgnoreCase)) ClientSecret = v;
+                    }
+                if (File.Exists(TokenFile)) { var t = File.ReadAllText(TokenFile).Trim(); if (t.Length > 0) RefreshToken = t; }
+            }
+            catch { }
+            if (string.IsNullOrWhiteSpace(ClientId) || string.IsNullOrWhiteSpace(ClientSecret) || string.IsNullOrWhiteSpace(RefreshToken)) return false;
+            try { await RefreshAccess(); SpotifyConnected = true; Log("Spotify reconnected - picked up new keys/token without a restart."); return true; }
+            catch (Exception e) { Log("Spotify reconnect attempt failed: " + e.Message); return false; }
+        }
+        finally { _reconnLock.Release(); }
+    }
+
     static async Task<(string status, string track, string uri)> QueueSpotify(string input)
     {
-        if (!SpotifyConnected) { Log("  Spotify request but Spotify isn't connected - refunding."); return ("no spotify", null, null); }
+        if (!SpotifyConnected && !await TryReconnectSpotify()) { Log("  Spotify request but Spotify isn't connected - refunding."); return ("no spotify", null, null); }
         if (!SpotifyEnabled) { Log("  Spotify request ignored - Spotify requests are turned off in the dock/app."); return ("spotify off", null, null); }
         string uri = ExtractTrackUri(input), label = null, artist = null; bool exp = false;
         if (uri == null) { var t = await SearchTrack(input); uri = t.uri; label = t.label; artist = t.artist; exp = t.exp; }
